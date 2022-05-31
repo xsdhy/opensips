@@ -9,18 +9,21 @@ RUN rpm -ivh https://repo.mysql.com//mysql57-community-release-el7-11.noarch.rpm
 	yum install mysql-devel mysql-community-client.x86_64 -y  && \
 	yum clean all
 
-RUN wget https://github.com/redis/hiredis/archive/refs/tags/v1.0.2.tar.gz && \
-	tar -zxvf v1.0.2.tar.gz && \
-	cd hiredis-1.0.2 && \
-	make -j && make install
+RUN yum -y install librdkafka-devel
+
+
+RUN yum -y install git python36 python36-pip python36-devel gcc mysql-devel python36-mysql python36-sqlalchemy python36-pyOpenSSL
+RUN git clone https://github.com/opensips/opensips-cli /opt/opensips-cli && \
+	cd /opt/opensips-cli && \
+	python3 setup.py install clean
 
 RUN cd /opt/ && \
-	wget https://github.com/OpenSIPS/opensips/archive/refs/tags/2.4.11.tar.gz && \
-	tar -zxvf v1.0.2.tar.gz && \
-	cd opensips-2.4.11 && \
+	wget --no-check-certificate https://github.com/OpenSIPS/opensips/archive/refs/tags/3.2.6.tar.gz && \
+	tar -zxvf 3.2.6.tar.gz && \
+	cd opensips-3.2.6 && \
 	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig && \
 	ldconfig && \
-	make all include_modules="db_mysql proto_tls proto_wss tls_mgm cachedb_redis" install
+	make all include_modules="db_mysql proto_tls proto_wss tls_mgm" install
 
 VOLUME [/usr/local/etc/opensips]
 

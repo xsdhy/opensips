@@ -1,0 +1,379 @@
+log_level=3
+log_stderror=yes
+log_facility=LOG_LOCAL0
+
+children=4
+
+
+auto_aliases=no
+
+
+listen=udp:eth0:5060
+listen=wss:eth0:5063
+listen=ws:eth0:5061
+
+
+####### Modules Section ########
+
+#set module path
+mpath="/usr/local/lib64/opensips/modules/"
+
+#### SIGNALING module
+loadmodule "signaling.so"
+
+#### rest_client module
+loadmodule "rest_client.so"
+modparam("rest_client", "connection_timeout", 2)
+
+#### StateLess module
+loadmodule "sl.so"
+
+#### Transaction Module
+loadmodule "tm.so"
+modparam("tm", "fr_timeout", 5)
+modparam("tm", "fr_inv_timeout", 30)
+modparam("tm", "restart_fr_on_each_reply", 0)
+modparam("tm", "onreply_avp_mode", 1)
+
+#### Record Route Module
+loadmodule "rr.so"
+modparam("rr", "append_fromtag", 0)
+
+#### MAX ForWarD module
+loadmodule "maxfwd.so"
+
+#### SIP MSG OPerationS module
+loadmodule "sipmsgops.so"
+
+#### MYSQL module
+loadmodule "db_mysql.so"
+
+#### FIFO Management Interface
+loadmodule "mi_fifo.so"
+modparam("mi_fifo", "fifo_name", "/tmp/opensips_fifo")
+modparam("mi_fifo", "fifo_mode", 0666)
+
+#### URI module
+loadmodule "uri.so"
+modparam("uri", "use_uri_table", 0)
+modparam("uri", "db_url","mysql://username:password@host/opensips")  #CUSTOMIZE ME
+
+#### USeR LOCation module
+loadmodule "usrloc.so"
+modparam("usrloc", "nat_bflag", "NAT")
+modparam("usrloc", "db_mode",   3)
+modparam("usrloc", "use_domain",   0)
+modparam("usrloc", "db_url","mysql://username:password@host/opensips")  #CUSTOMIZE ME
+
+#### REGISTRAR module
+loadmodule "registrar.so"
+modparam("registrar", "tcp_persistent_flag", "TCP_PERSISTENT")
+modparam("registrar", "received_avp", "$avp(received_nh)")
+modparam("registrar", "max_contacts", 10)
+
+#### ACCounting module
+loadmodule "acc.so"
+modparam("acc", "early_media", 0)
+modparam("acc", "report_cancels", 0)
+modparam("acc", "detect_direction", 0)
+
+#### DIALOG module
+loadmodule "dialog.so"
+modparam("dialog", "dlg_match_mode", 1)
+modparam("dialog", "default_timeout", 21600)
+modparam("dialog", "db_mode", 2)
+modparam("dialog", "db_url","mysql://username:password@host/opensips")  #CUSTOMIZE ME
+
+
+#### AUTHentication modules
+loadmodule "auth.so"
+modparam("auth", "nonce_expire", 86400)
+modparam("auth", "disable_nonce_check", 1)
+
+loadmodule "auth_db.so"
+modparam("auth_db", "calculate_ha1", yes)
+modparam("auth_db", "user_column", "sip")
+modparam("auth_db", "password_column", "password")
+#modparam("auth_db", "domain_column", "domain")
+modparam("auth_db", "skip_version_check", 1)
+modparam("auth_db", "db_url","mysql://username:password@host/opensips")  #CUSTOMIZE ME
+modparam("auth_db", "load_credentials", "")
+
+#### LOAD BALANCER module
+loadmodule "load_balancer.so"
+modparam("load_balancer", "db_url","mysql://username:password@host/opensips")  #CUSTOMIZE ME
+modparam("load_balancer", "probing_method", "OPTIONS")
+modparam("load_balancer", "probing_interval", 30)
+
+
+####  NAT modules
+loadmodule "nathelper.so"
+modparam("nathelper", "natping_interval", 10)
+modparam("nathelper", "ping_nated_only", 1)
+modparam("nathelper", "sipping_bflag", "SIP_PING_FLAG")
+modparam("nathelper", "sipping_from", "sip:pinger@sip.domain.com") #CUSTOMIZE ME
+modparam("nathelper", "received_avp", "$avp(received_nh)")
+
+loadmodule "proto_udp.so"
+loadmodule "proto_ws.so"
+loadmodule "proto_wss.so"
+
+loadmodule "tls_mgm.so"
+modparam("tls_mgm","verify_cert", "0")
+modparam("tls_mgm","require_cert", "0")
+modparam("tls_mgm","certificate", "/usr/local/etc/opensips/cert/self.pem") #CUSTOMIZE ME
+modparam("tls_mgm","private_key", "/usr/local/etc/opensips/cert/self.key") #CUSTOMIZE ME
+
+####### Routing Logic ########
+route{
+	xlog("[router-start]proto:$proto $rm from $si (callid=$ci) msg=$mb \n");
+	force_rport();
+	if (nat_uac_test("23")) {
+		if (is_method("REGISTER")) {
+			fix_nated_register();
+			setbflag(NAT);
+		} else {
+			fix_nated_contact();
+			setflag(NAT);
+		}
+	}
+
+	if (!mf_process_maxfwd_header("10")) {
+		send_reply("483","Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		# sequential request withing a dialog should
+		# take the path determined by record-routing
+		if (loose_route()) {
+
+			# validate the sequential request against dialog
+			if ( $DLG_status!=NULL && !validate_dialog() ) {
+				xlog("In-Dialog $rm from $si (callid=$ci) is not valid according to dialog\n");
+				## exit;
+			}
+
+			if (is_method("BYE")) {
+				xlog("BYE 1 $rm from $si (callid=$ci) \n");
+				# do accounting even if the transaction fails
+				do_accounting("log","failed");
+
+			} else if (is_method("INVITE")) {
+				# even if in most of the cases is useless, do RR for
+				# re-INVITEs alos, as some buggy clients do change route set
+				# during the dialog.
+				record_route();
+			}
+
+			if (check_route_param("nat=yes"))
+				setflag(NAT);
+
+			# route it out to whatever destination was set by loose_route()
+			# in $du (destination URI).
+			route(relay);
+		} else {
+			if ( is_method("ACK") ) {
+				if ( t_check_trans() ) {
+					# non loose-route, but stateful ACK; must be an ACK after
+					# a 487 or e.g. 404 from upstream server
+					t_relay();
+					exit;
+				} else {
+					# ACK without matching transaction ->
+					# ignore and discard
+					exit;
+				}
+			}
+			sl_send_reply("404","Not here");
+		}
+		exit;
+	}
+
+	# CANCEL processing
+	if (is_method("CANCEL")) {
+		if (t_check_trans())
+			t_relay();
+		exit;
+	}
+
+	# absorb retransmissions, but do not create transaction
+	t_check_trans();
+
+
+	# record routing
+	if (!is_method("REGISTER|MESSAGE"))
+		record_route();
+
+
+	if (is_method("INVITE")) {
+		# create dialog with timeout
+		if ( !create_dialog("B") ) {
+			send_reply("500","Internal Server Error");
+			exit;
+		}
+
+		xlog("$C(xr) =====>>>incoming call, from_ip:$si from_port:$sp from: $fU to:$tU $C(xx)\n");
+
+		if (lb_is_destination("$si","$sp","1") ) {
+			lb_count_call("$si","$sp","1", "pstn");
+		}else if(lb_is_destination("$si","$sp","2") ){
+			# gateway incoming call
+			if ( !load_balance("1","pstn") ) {
+				send_reply("503","unavailable");
+				exit();
+			}
+		}else{
+			if (is_registered("location","$fu")) {
+				# outbound call to destinations
+				if ( !load_balance("1","pstn") ) {
+					send_reply("503","unavailable");
+					exit();
+				}
+
+				xlog("$C(xr) Selected destination is: uri:$du ip:$dd port:$dp $C(xx) \n");
+				if (!t_relay()) {
+					sl_reply_error();
+				}
+			} else {
+				send_reply("403","not register");
+			}
+			exit;
+		}
+		do_accounting("log");
+	}
+
+	if (is_method("PUBLISH|SUBSCRIBE")) {
+		send_reply("503", "Service Unavailable");
+		exit;
+	}
+
+	if (is_method("REGISTER")) {
+		$var(expire_value) = $(hdr(Expires){s.int});
+		if ($var(expire_value)>0){
+			xlog("[REGISTER]login $au $proto\n");
+
+			if (!www_authorize("", "call_sw_sip")) {
+				www_challenge("", "1");
+				exit;
+			}
+			if (!db_check_to()) {
+				send_reply("403","Forbidden auth ID");
+				exit;
+			}
+			if ($proto == "tcp" || $proto == "tls")
+				setflag(TCP_PERSISTENT);
+			if (isflagset(NAT)) {
+				setbflag(SIP_PING_FLAG);
+			}
+
+			#CUSTOMIZE ME
+			# rest_get("https://host/register-status?sip=$au&state=register&client=$proto", "$var(credit)", "$var(ct)", "$var(rcode)");
+
+			# cache_raw_query("redis:group1","HMSET user:$au ip $si port $sp regProto $proto");
+			# cache_raw_query("redis:group1","EXPIRE user:$au $var(expire_value)");
+
+			if (!save("location")){
+				sl_reply_error();
+				exit;
+			}	
+		}else if($var(expire_value) == 0){
+			xlog("[REGISTER]logout $au $proto\n");
+			# cache_raw_query("redis:group1","HDEL user:$au ip port regProto");
+			# rest_get("https://host/register-status?sip=$au&state=unregister&client=$proto", "$var(credit)", "$var(ct)", "$var(rcode)");
+			if (!save("location")){
+				sl_reply_error();
+				exit;
+			}
+		}
+		exit;
+	}
+
+	if ($rU==NULL) {
+		# request with no Username in RURI
+		send_reply("484","Address Incomplete");
+		exit;
+	}
+
+	# do lookup with method filtering
+	if (!lookup("location","mr")) {
+		if (!db_does_uri_exist()) {
+			send_reply("420","Bad Extension");
+			exit;
+		}
+		#t_newtran();  #add fix
+		t_reply("404", "Not Found");
+		exit;
+	}
+
+	if (isbflagset(NAT)) setflag(NAT);
+
+	# when routing via usrloc, log the missed calls also
+	do_accounting("log","missed");
+
+	route(relay);
+}
+
+
+route[relay] {
+	# for INVITEs enable some additional helper routes
+	if (is_method("INVITE")) {
+		t_on_branch("per_branch_ops");
+		t_on_reply("handle_nat");
+		t_on_failure("missed_call");
+	}
+
+	if (isflagset(NAT)) {
+		add_rr_param(";nat=yes");
+	}
+
+	if (!t_relay()) {
+		send_reply("500","Internal Error");
+	}
+	exit;
+}
+
+
+
+
+onreply_route[modify_sdp] {
+	xlog("[modify_sdp]]");
+}
+
+branch_route[per_branch_ops] {
+	xlog("new branch at $ru\n");
+}
+
+
+onreply_route[handle_nat] {
+	xlog("[handle_nat]incoming reply\n");
+	fix_nated_contact();
+}
+
+
+failure_route[missed_call] {
+	if (t_was_cancelled()) {
+		exit;
+	}
+
+	# uncomment the following lines if you want to block client
+	# redirect based on 3xx replies.
+	##if (t_check_status("3[0-9][0-9]")) {
+	##t_reply("404","Not found");
+	##	exit;
+	##}
+}
+
+
+
+local_route {
+	if (is_method("BYE") && $DLG_dir=="UPSTREAM") {
+		acc_log_request("200 Dialog Timeout");
+	}
+}
+
+failure_route[lb_failed] {
+	if(t_was_cancelled()) {
+		exit;
+	}
+}

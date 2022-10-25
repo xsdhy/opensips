@@ -30,8 +30,6 @@ RUN cd /opt/ && \
 	ldconfig && \
 	make all include_modules="db_mysql proto_tls proto_wss tls_mgm cachedb_redis rest_client" install
 
-VOLUME [/usr/local/etc/opensips]
-
 EXPOSE 5060/udp 5061/tcp 5062/tcp
 
 ENTRYPOINT ["/usr/local/sbin/opensips","-FE"]

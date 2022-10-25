@@ -5,6 +5,6 @@ services:
     image: 'xsdhy/opensips:2.4.11'
     network_mode: host
     volumes:
-      - "/data/docker/opensips/opensips.cfg:/usr/local/etc/opensips/opensips.cfg"
-      - "/data/docker/opensips/cert/self.pem:/usr/local/etc/opensips/cert/self.pem"
-      - "/data/docker/opensips/cert/self.key:/usr/local/etc/opensips/cert/self.key"
+      - "./opensips.cfg:/usr/local/etc/opensips/opensips.cfg"
+      - "./cert/self.pem:/usr/local/etc/opensips/cert/domain.pem"
+      - "./self.key:/usr/local/etc/opensips/cert/domain.key"
